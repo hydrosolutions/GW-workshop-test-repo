@@ -71,8 +71,6 @@ Set up The Littlest JupyterHub (TLJH) on AWS EC2 to deliver a groundwater modeli
 
 ## Phase 3: JupyterHub Installation
 
-*Timeline: 3-4 weeks before workshop*
-
 ### Step 6: Install The Littlest JupyterHub
 
 - SSH into instance as `ubuntu` user
