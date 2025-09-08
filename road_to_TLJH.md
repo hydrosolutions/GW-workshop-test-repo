@@ -207,64 +207,42 @@ curl -L https://tljh.jupyter.org/bootstrap.py | sudo python3 - --admin myuser
 - **SSH Key:** littles-hub-key (stored at ~/.ssh/littles-hub-key.pem)
 - **IAM User:** ec2-admin (AdministratorAccess)
 
-## Next Steps for Workshop Preparation
+# TLJH Package Management Notes
 
-Now that TLJH is successfully installed and accessible, the following phases remain:
+## Key Point
 
-### Phase 4: Environment Configuration (TODO)
+TLJH creates a shared user environment at `/opt/tljh/user/bin/python` that all JupyterHub users access automatically. No custom kernels needed for workshops.
 
-- Install required packages for groundwater modeling (flopy, modflow-exe, etc.)
-- Install nbgitpuller extension
-- Configure JupyterLab as default interface
-- Set per-user resource limits
+## Package Installation Commands
 
-### Phase 5: Content Delivery Setup (TODO)
-
-- Create GitHub repository with workshop materials
-- Generate nbgitpuller link for one-click access
-- Create user accounts for 20 participants
-- Test end-to-end workflow
-
-### Phase 6: HTTPS Setup (TODO)
-
-- Configure Let's Encrypt SSL certificate for secure access
-- Update access URL to https://
-
-### Phase 7: Testing and Validation (TODO)
-
-- Stress test with multiple concurrent users
-- Create backups and recovery procedures
-- Prepare fallback options
-
-## Key Learnings and Success Factors
-
-**What worked well:**
-
-- Free tier t3.micro instance sufficient for basic TLJH installation
-- Ubuntu 22.04 LTS provided stable base with Python 3.10.12
-- TLJH bootstrap script handled all complex configuration automatically
-- Elastic IP ensured consistent access throughout setup
-
-**Critical commands for TLJH management:**
+**Correct (for workshop participants):**
 
 ```bash
-# Check TLJH status
-sudo systemctl status jupyterhub
-
-# View logs
-sudo journalctl -u jupyterhub
-
-# Restart hub
-sudo tljh-config reload hub
-
-# Add admin user
-sudo tljh-config add-item users.admin <username>
+sudo -E /opt/tljh/user/bin/pip install pandas numpy matplotlib flopy
 ```
 
-**Current Status:** TLJH successfully installed and accessible. Ready for workshop-specific configuration and content preparation.
+**Wrong (installs to system Python, not accessible in notebooks):**
 
-## Resources
+```bash
+sudo -E pip install pandas  # Don't use this
+```
 
-- TLJH Documentation: <https://tljh.jupyter.org>
-- AWS EC2 Guide: <https://docs.aws.amazon.com/ec2/>
-- JupyterHub Community Forum: <https://discourse.jupyter.org>
+## Workshop Benefits
+
+- Install packages once, all users get them automatically
+- Participants need no technical setup or kernel selection
+- Consistent environment across all users
+- Simple management for instructors
+
+## Verification
+
+```bash
+# Test in notebook
+import sys
+print(sys.executable)  # Should show: /opt/tljh/user/bin/python
+```
+
+## Resource Notes
+
+- t3.micro: Be selective with packages (1GB RAM)
+- t3.xlarge: More flexibility for larger packages
