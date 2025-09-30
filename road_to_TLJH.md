@@ -1,248 +1,555 @@
-# Road to The Littlest JupyterHub (TLJH) - AWS Setup Documentation
+# The Littlest JupyterHub (TLJH) on AWS EC2
+
+## Complete Deployment Guide
+
+**Author:** Nicolas Lazaro  
+**Organization:** Hydrosolutions GmbH  
+**Last Updated:** September 2025  
+**Purpose:** Workshop deployment guide for groundwater modeling training
+
+---
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Phase 1: AWS IAM Setup](#phase-1-aws-iam-setup)
+3. [Phase 2: Infrastructure Configuration](#phase-2-infrastructure-configuration)
+4. [Phase 3: TLJH Installation](#phase-3-tljh-installation)
+5. [Phase 4: HTTPS Configuration](#phase-4-https-configuration)
+6. [Phase 5: Package Management](#phase-5-package-management)
+7. [Production Deployment Summary](#production-deployment-summary)
+
+---
 
 ## Overview
 
-This document outlines the complete AWS infrastructure setup for hosting The Littlest JupyterHub (TLJH) on EC2, including IAM user creation, EC2 instance configuration, and successful TLJH installation.
+This guide documents the complete process for deploying The Littlest JupyterHub on AWS EC2, from IAM user creation through HTTPS configuration. TLJH is ideal for workshops with 1-100 concurrent users.
 
-## Phase 1: IAM Setup and User Creation ✅ COMPLETED
+**Key Features:**
 
-### Creating the EC2Admin Group and User
+- Single-server JupyterHub deployment
+- Shared user environment (no kernel management needed)
+- Built-in HTTPS with Let's Encrypt
+- Cost-effective for training workshops
 
-To follow AWS security best practices, we avoided using the root account for day-to-day operations and instead created a dedicated IAM user with administrative privileges.
+---
 
-**Manual Steps via AWS Console:**
+## Phase 1: AWS IAM Setup
 
-1. Logged into AWS Management Console as root user
-2. Navigated to IAM service
-3. Created IAM group named `EC2Admins` with `AdministratorAccess` policy attached
-4. Created IAM user `ec2-admin` and added it to the `EC2Admins` group
-5. Generated access keys for programmatic access
-6. Downloaded credentials
+### Prerequisites
 
-**Initial CLI Configuration:**
+- AWS account with root access
+- AWS CLI installed locally
 
-```bash
-aws configure --profile ec2-admin
-# Entered Access Key ID, Secret Access Key
-# Set region to eu-central-2 (later changed to eu-central-1)
-# Set output format to json
-```
+### Step 1.1: Create IAM Group and User
 
-**Troubleshooting Credentials:**
-Initially encountered `InvalidClientTokenId` error. Resolved by updating credentials:
+Following AWS security best practices, create a dedicated IAM user instead of using root credentials:
 
-```bash
-aws configure set aws_access_key_id AKIAZQSDA66HN5AR767O --profile ec2-admin
-aws configure set aws_secret_access_key 'SECRET_KEY_HERE' --profile ec2-admin
-```
+**Via AWS Console:**
 
-**Region Adjustment:**
-Changed region from eu-central-2 to eu-central-1 (Frankfurt) for better service availability:
+1. Log into AWS Management Console as root
+2. Navigate to **IAM** → **User groups** → **Create group**
+   - Group name: `EC2Admins`
+   - Attach policy: `AdministratorAccess`
+3. Navigate to **IAM** → **Users** → **Create user**
+   - Username: `ec2-admin`
+   - Add to group: `EC2Admins`
+   - Enable **Programmatic access**
+4. Download access keys (save securely)
 
-```bash
-aws configure set region eu-central-1 --profile ec2-admin
-```
-
-**Verification:**
+### Step 1.2: Configure AWS CLI Profile
 
 ```bash
-aws sts get-caller-identity --profile ec2-admin
-# Successfully returned: UserId, Account, and Arn confirming access
+# Configure new profile
+aws configure --profile work
+# Enter Access Key ID
+# Enter Secret Access Key
+# Region: ap-south-1 (Mumbai) or your preferred region
+# Output format: json
+
+# Verify credentials
+aws sts get-caller-identity --profile work
 ```
 
-## Phase 2: AWS Infrastructure Setup ✅ COMPLETED
+**Expected output:**
 
-### Step 1: SSH Key Pair Creation
+```json
+{
+    "UserId": "AIDAZQSDA...",
+    "Account": "123456789012",
+    "Arn": "arn:aws:iam::123456789012:user/ec2-admin"
+}
+```
 
-Created an SSH key pair for secure access to the EC2 instance:
+---
+
+## Phase 2: Infrastructure Configuration
+
+### Step 2.1: Create SSH Key Pair
 
 ```bash
-# Create key pair and save private key locally
-aws ec2 create-key-pair --key-name littles-hub-key --profile ec2-admin --output text --query 'KeyMaterial' > ~/.ssh/littles-hub-key.pem
+# Generate key pair
+aws ec2 create-key-pair \
+  --key-name workshop-central-asia \
+  --profile work \
+  --region ap-south-1 \
+  --query 'KeyMaterial' \
+  --output text > ~/Downloads/workshop-central-asia.pem
 
-# Set proper permissions for SSH key
-chmod 400 ~/.ssh/littles-hub-key.pem
+# Move to secure location and set permissions
+mv ~/Downloads/workshop-central-asia.pem ~/.ssh/
+chmod 400 ~/.ssh/workshop-central-asia.pem
 
-# Verify key pair creation
-aws ec2 describe-key-pairs --key-names littles-hub-key --profile ec2-admin --output table
+# Verify
+aws ec2 describe-key-pairs \
+  --key-names workshop-central-asia \
+  --profile work \
+  --region ap-south-1
 ```
 
-### Step 2: Security Group Configuration
-
-Created a security group to control network access to the JupyterHub instance:
+### Step 2.2: Configure Security Group
 
 ```bash
 # Create security group
-aws ec2 create-security-group --group-name littles-hub-sg --description "Security group for The Littles JupyterHub" --profile ec2-admin
+aws ec2 create-security-group \
+  --group-name workshop-sg \
+  --description "Security group for JupyterHub workshop" \
+  --profile work \
+  --region ap-south-1
 
-# Allow SSH access (port 22) from anywhere
-aws ec2 authorize-security-group-ingress --group-name littles-hub-sg --protocol tcp --port 22 --cidr 0.0.0.0/0 --profile ec2-admin
+# Allow SSH (port 22)
+aws ec2 authorize-security-group-ingress \
+  --group-name workshop-sg \
+  --protocol tcp \
+  --port 22 \
+  --cidr 0.0.0.0/0 \
+  --profile work \
+  --region ap-south-1
 
-# Allow HTTP access (port 80) from anywhere
-aws ec2 authorize-security-group-ingress --group-name littles-hub-sg --protocol tcp --port 80 --cidr 0.0.0.0/0 --profile ec2-admin
+# Allow HTTP (port 80)
+aws ec2 authorize-security-group-ingress \
+  --group-name workshop-sg \
+  --protocol tcp \
+  --port 80 \
+  --cidr 0.0.0.0/0 \
+  --profile work \
+  --region ap-south-1
 
-# Allow HTTPS access (port 443) from anywhere
-aws ec2 authorize-security-group-ingress --group-name littles-hub-sg --protocol tcp --port 443 --cidr 0.0.0.0/0 --profile ec2-admin
-
-# Verify security group configuration
-aws ec2 describe-security-groups --group-names littles-hub-sg --profile ec2-admin --output table
+# Allow HTTPS (port 443)
+aws ec2 authorize-security-group-ingress \
+  --group-name workshop-sg \
+  --protocol tcp \
+  --port 443 \
+  --cidr 0.0.0.0/0 \
+  --profile work \
+  --region ap-south-1
 ```
 
-### Step 3: AMI Selection
-
-Found the appropriate Ubuntu 22.04 LTS AMI for the Frankfurt region:
+### Step 2.3: Select Ubuntu AMI
 
 ```bash
-# Find latest Ubuntu 22.04 LTS AMI
-aws ec2 describe-images --owners 099720109477 --filters "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*" --query 'Images[0].[ImageId,Name]' --output table --profile ec2-admin
-# Result: ami-01cd11f529b248fd4
+# Find latest Ubuntu 22.04 LTS AMI for your region
+aws ec2 describe-images \
+  --owners 099720109477 \
+  --filters "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*" \
+  --query 'Images | sort_by(@, &CreationDate) | [-1].[ImageId,Name,CreationDate]' \
+  --output table \
+  --profile work \
+  --region ap-south-1
 ```
 
-### Step 4: EC2 Instance Launch
+**Mumbai region AMI:** `ami-0dee22c13ea7a9a67` (as of Sept 2025)
 
-Initially attempted to use t3.large but switched to t3.micro for free tier eligibility:
+### Step 2.4: Launch EC2 Instance
+
+**For production workshops (20 users):**
 
 ```bash
-# Check free tier eligible instance types
-aws ec2 describe-instance-types --filters "Name=free-tier-eligible,Values=true" --query 'InstanceTypes[*].[InstanceType,VCpuInfo.DefaultVCpus,MemoryInfo.SizeInMiB]' --output table --profile ec2-admin
-
-# Launch EC2 instance with t3.micro (free tier)
-aws ec2 run-instances --image-id ami-01cd11f529b248fd4 --count 1 --instance-type t3.micro --key-name littles-hub-key --security-groups littles-hub-sg --block-device-mappings DeviceName=/dev/sda1,Ebs='{VolumeSize=20,VolumeType=gp3}' --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=littles-jupyterhub}]' --profile ec2-admin
+aws ec2 run-instances \
+  --image-id ami-0dee22c13ea7a9a67 \
+  --count 1 \
+  --instance-type t3.xlarge \
+  --key-name workshop-central-asia \
+  --security-groups workshop-sg \
+  --block-device-mappings DeviceName=/dev/sda1,Ebs='{VolumeSize=20,VolumeType=gp3}' \
+  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=workshop-central-asia-instance}]' \
+  --profile work \
+  --region ap-south-1
 ```
 
-### Step 5: Elastic IP Configuration
+**Instance specs:**
 
-Allocated and associated an Elastic IP for consistent network access:
+- **Type:** t3.xlarge (4 vCPUs, 16 GB RAM)
+- **Storage:** 20 GB gp3 SSD
+- **OS:** Ubuntu 22.04 LTS
+
+Save the `InstanceId` from the output (e.g., `i-001c2231d237bb22b`)
+
+### Step 2.5: Allocate and Associate Elastic IP
 
 ```bash
 # Allocate Elastic IP
-aws ec2 allocate-address --domain vpc --profile ec2-admin
-# Result: AllocationId: eipalloc-0a4ce318784404a2c, PublicIp: 63.179.186.206
+aws ec2 allocate-address \
+  --domain vpc \
+  --profile work \
+  --region ap-south-1
 
-# Associate Elastic IP with instance
-aws ec2 associate-address --instance-id i-04ed29cb6be12bae0 --allocation-id eipalloc-0a4ce318784404a2c --profile ec2-admin
+# Note the AllocationId and PublicIp from output
 
-# Verify Elastic IP association
-aws ec2 describe-instances --instance-ids i-04ed29cb6be12bae0 --query 'Reservations[*].Instances[*].[PublicIpAddress,PublicDnsName]' --output table --profile ec2-admin
+# Associate with instance
+aws ec2 associate-address \
+  --instance-id i-001c2231d237bb22b \
+  --allocation-id eipalloc-xxxxxxxxx \
+  --profile work \
+  --region ap-south-1
+
+# Verify
+aws ec2 describe-addresses \
+  --profile work \
+  --region ap-south-1
 ```
 
-## Phase 3: JupyterHub Installation ✅ COMPLETED
+**Production IP:** `13.204.188.29`
 
-### Step 6: SSH Connection and System Preparation
+### Step 2.6: Configure DNS
 
-Successfully connected to the EC2 instance and prepared the system:
+Contact your IT department or domain administrator to create a DNS A record:
+
+**DNS Configuration:**
+
+- **Record Type:** A
+- **Host/Name:** jupyter (or hub)
+- **Points to:** 13.204.188.29 (your Elastic IP)
+- **TTL:** 3600 (or Auto)
+
+This creates: `jupyter.hydrosolutions.ch` → `13.204.188.29`
+
+**Verify DNS propagation:**
 
 ```bash
-# SSH into the instance
-ssh -i ~/.ssh/littles-hub-key.pem ubuntu@63.179.186.206
-
-# Update system packages
-sudo apt update && sudo apt upgrade -y
-
-# Verify Python 3 (returned 3.10.12)
-python3 --version
-
-# Verify curl installation
-curl --version
+nslookup jupyter.hydrosolutions.ch
+# Should return: 13.204.188.29
 ```
 
-### Step 7: TLJH Installation
+Wait 15 minutes to 2 hours for global DNS propagation.
 
-Successfully installed The Littlest JupyterHub using the bootstrap script:
+---
+
+## Phase 3: TLJH Installation
+
+### Step 3.1: SSH into EC2 Instance
+
+```bash
+ssh -i ~/.ssh/workshop-central-asia.pem ubuntu@13.204.188.29
+```
+
+**First connection:** Type `yes` when prompted about host authenticity.
+
+### Step 3.2: Update System
+
+```bash
+# Update package lists and upgrade
+sudo apt update && sudo apt upgrade -y
+
+# Verify Python 3
+python3 --version
+# Should show: Python 3.10.x or newer
+```
+
+### Step 3.3: Install TLJH
 
 ```bash
 # Install TLJH with admin user
-curl -L https://tljh.jupyter.org/bootstrap.py | sudo python3 - --admin myuser
+curl -L https://tljh.jupyter.org/bootstrap.py | sudo python3 - --admin <your-admin-username>
 ```
 
-**Installation completed successfully with:**
+Replace `<your-admin-username>` with your desired admin username (e.g., `nicolas`).
 
-- Hub environment set up with virtual environment at `/opt/tljh/hub`
-- Admin user "myuser" created with passwordless sudo access
-- User environment with Miniforge3 conda installed
-- JupyterHub and JupyterLab configured
-- Traefik proxy (v3.1.4) set up for web server
-- SystemD services created and started:
-  - `jupyterhub.service`
-  - `traefik.service`
+**Installation takes 5-10 minutes** and will:
 
-### Step 8: Access Verification ✅ SUCCESS
+- Set up Python virtual environment at `/opt/tljh/hub`
+- Install JupyterHub and JupyterLab
+- Install Traefik reverse proxy
+- Create systemd services
+- Configure admin user with passwordless sudo
 
-**JupyterHub is now accessible at:** `http://63.179.186.206`
+**Completion message:**
 
-- Login page loads successfully
-- Admin user "myuser" can log in (password set on first login)
-- JupyterLab interface accessible after login
+```
+Done!
+```
 
-## Current Infrastructure Summary
+### Step 3.4: Initial Access Test
 
-**EC2 Instance Details:**
+Open browser and navigate to:
 
-- **Instance ID:** i-04ed29cb6be12bae0
-- **Instance Type:** t3.micro (2 vCPUs, 1GB RAM)
-- **AMI:** Ubuntu Server 22.04 LTS (ami-01cd11f529b248fd4)
-- **Storage:** 20GB EBS gp3 volume
-- **Region:** eu-central-1 (Frankfurt)
-- **Availability Zone:** eu-central-1b
+```
+http://jupyter.hydrosolutions.ch
+```
 
-**Network Configuration:**
+You should see the JupyterHub login page. Log in with your admin username and set a password on first login.
 
-- **Elastic IP:** 63.179.186.206
-- **Public DNS:** ec2-63-179-186-206.eu-central-1.compute.amazonaws.com
-- **Security Group:** littles-hub-sg
-  - SSH (22): Open to 0.0.0.0/0
-  - HTTP (80): Open to 0.0.0.0/0
-  - HTTPS (443): Open to 0.0.0.0/0
+---
 
-**TLJH Configuration:**
+## Phase 4: HTTPS Configuration
 
-- **Access URL:** <http://63.179.186.206>
-- **Admin User:** myuser
-- **Default Interface:** JupyterLab
-- **Conda Environment:** Miniforge3 (24.7.1-2)
-- **Proxy:** Traefik 3.1.4
+### Step 4.1: Enable HTTPS
 
-**Access Configuration:**
-
-- **SSH Key:** littles-hub-key (stored at ~/.ssh/littles-hub-key.pem)
-- **IAM User:** ec2-admin (AdministratorAccess)
-
-# TLJH Package Management Notes
-
-## Key Point
-
-TLJH creates a shared user environment at `/opt/tljh/user/bin/python` that all JupyterHub users access automatically. No custom kernels needed for workshops.
-
-## Package Installation Commands
-
-**Correct (for workshop participants):**
+While still SSH'd into the server:
 
 ```bash
-sudo -E /opt/tljh/user/bin/pip install pandas numpy matplotlib flopy
+# Enable HTTPS
+sudo tljh-config set https.enabled true
+
+# Set Let's Encrypt email for certificate notifications
+sudo tljh-config set https.letsencrypt.email your-email@hydrosolutions.ch
+
+# Add your domain (use add-item, not set)
+sudo tljh-config add-item https.letsencrypt.domains jupyter.hydrosolutions.ch
+
+# Apply configuration
+sudo tljh-config reload proxy
 ```
 
-**Wrong (installs to system Python, not accessible in notebooks):**
+**Note:** Use `add-item` because the domains configuration expects an array format.
 
-```bash
-sudo -E pip install pandas  # Don't use this
+### Step 4.2: Verify HTTPS
+
+Wait 5-10 minutes for Let's Encrypt to issue the certificate, then access:
+
+```
+https://jupyter.hydrosolutions.ch
 ```
 
-## Workshop Benefits
+You should see a valid SSL certificate (green padlock) with no browser warnings.
 
-- Install packages once, all users get them automatically
-- Participants need no technical setup or kernel selection
+**What happened:**
+
+1. Traefik requested an SSL certificate from Let's Encrypt
+2. Let's Encrypt verified domain ownership
+3. Certificate issued and installed automatically
+4. HTTP traffic now redirects to HTTPS
+5. Certificates auto-renew every 90 days
+
+---
+
+## Phase 5: Package Management
+
+### Understanding TLJH's Shared Environment
+
+**Critical Concept:** TLJH uses a shared user environment at `/opt/tljh/user/` that all JupyterHub users access automatically. You install packages once, and all users get them.
+
+**Benefits for workshops:**
+
+- Participants need no technical setup
+- No kernel selection required
 - Consistent environment across all users
-- Simple management for instructors
+- Simplified instructor management
 
-## Verification
+### Step 5.1: Install Python Packages
+
+**Correct method** (installs to shared environment):
 
 ```bash
+sudo -E /opt/tljh/user/bin/pip install pandas numpy matplotlib scipy
+```
+
+**Common mistake** (installs to system Python, not accessible in notebooks):
+
+```bash
+sudo pip install pandas  # ❌ Wrong - don't use this
+```
+
+### Step 5.2: Install Conda Packages
+
+For packages better installed via conda:
+
+```bash
+sudo -E /opt/tljh/user/bin/conda install -y geopandas rasterio
+```
+
+### Step 5.3: Example Workshop Installation
+
+For a groundwater modeling workshop:
+
+```bash
+# Install core scientific packages
+sudo -E /opt/tljh/user/bin/pip install \
+  pandas \
+  numpy \
+  matplotlib \
+  scipy \
+  flopy \
+  geopandas \
+  jupyter \
+  ipywidgets
+
+# Enable widgets extension
+sudo -E /opt/tljh/user/bin/jupyter nbextension enable --py widgetsnbextension
+```
+
+### Step 5.4: Verify Installation
+
+Create a test notebook and run:
+
+```python
+import sys
+print(f"Python executable: {sys.executable}")
+# Should show: /opt/tljh/user/bin/python
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+print("All packages imported successfully!")
+```
+
+### Step 5.5: Resource Considerations
+
+**Instance sizing guide:**
+
+- **t3.micro** (1GB RAM): Minimal packages, ~5 users
+- **t3.small** (2GB RAM): Basic packages, ~10 users
+- **t3.xlarge** (16GB RAM): Full packages, 20+ users
+
+---
+
+## Production Deployment Summary
+
+### Infrastructure Details
+
+**EC2 Instance:**
+
+- **Instance ID:** i-001c2231d237bb22b
+- **Type:** t3.xlarge (4 vCPUs, 16 GB RAM)
+- **AMI:** Ubuntu 22.04 LTS (ami-0dee22c13ea7a9a67)
+- **Storage:** 20 GB gp3 SSD
+- **Region:** ap-south-1 (Mumbai)
+
+**Network:**
+
+- **Elastic IP:** 13.204.188.29
+- **Domain:** jupyter.hydrosolutions.ch
+- **HTTPS:** Enabled with Let's Encrypt
+
+**Access:**
+
+- **SSH:** `ssh -i ~/.ssh/workshop-central-asia.pem ubuntu@13.204.188.29`
+- **JupyterHub:** <https://jupyter.hydrosolutions.ch>
+- **Admin User:** nicolas
+
+### Cost Estimate
+
+**Monthly costs (approximate):**
+
+- t3.xlarge instance: ~$120/month
+- 20 GB gp3 storage: ~$2/month
+- Elastic IP: Free while associated
+- **Total:** ~$122/month
+
+**Workshop optimization:** Launch instance 1 week before workshop, terminate 1 week after to minimize costs.
+
+---
+
+## Troubleshooting
+
+### SSH Connection Issues
+
+```bash
+# If permission denied
+chmod 400 ~/.ssh/workshop-central-asia.pem
+
+# If wrong path
+ls -la ~/.ssh/workshop-central-asia.pem
+
+# If connection timeout, check security group
+aws ec2 describe-security-groups --group-names workshop-sg --profile work --region ap-south-1
+```
+
+### HTTPS Certificate Issues
+
+```bash
+# Check Traefik logs
+sudo journalctl -u traefik -n 50
+
+# Verify domain resolves correctly
+nslookup jupyter.hydrosolutions.ch
+
+# Re-apply HTTPS config
+sudo tljh-config reload proxy
+```
+
+### Package Installation Issues
+
+```bash
+# Verify you're using correct pip
+which /opt/tljh/user/bin/pip
+
+# Check installation logs
+sudo /opt/tljh/user/bin/pip list
+
 # Test in notebook
 import sys
-print(sys.executable)  # Should show: /opt/tljh/user/bin/python
+print(sys.executable)
 ```
 
-## Resource Notes
+---
 
-- t3.micro: Be selective with packages (1GB RAM)
-- t3.xlarge: More flexibility for larger packages
+## Maintenance
+
+### Regular Tasks
+
+**Weekly during workshop:**
+
+- Monitor disk usage: `df -h`
+- Check memory usage: `free -h`
+- Review JupyterHub logs: `sudo journalctl -u jupyterhub -n 100`
+
+**After workshop:**
+
+- Stop instance if not needed: `aws ec2 stop-instances --instance-ids i-001c2231d237bb22b --profile work --region ap-south-1`
+- Take snapshot of EBS volume for backup
+- Optionally terminate to stop all charges
+
+### Backup Strategy
+
+```bash
+# Create AMI of configured instance
+aws ec2 create-image \
+  --instance-id i-001c2231d237bb22b \
+  --name "jupyterhub-workshop-backup-$(date +%Y%m%d)" \
+  --description "TLJH configured for workshops" \
+  --profile work \
+  --region ap-south-1
+```
+
+---
+
+## References
+
+- [TLJH Documentation](https://tljh.jupyter.org/)
+- [AWS EC2 User Guide](https://docs.aws.amazon.com/ec2/)
+- [Let's Encrypt Documentation](https://letsencrypt.org/docs/)
+
+---
+
+## Appendix: Quick Command Reference
+
+```bash
+# SSH into server
+ssh -i ~/.ssh/workshop-central-asia.pem ubuntu@13.204.188.29
+
+# Install packages (correct method)
+sudo -E /opt/tljh/user/bin/pip install package-name
+
+# Restart JupyterHub
+sudo systemctl restart jupyterhub
+
+# View JupyterHub logs
+sudo journalctl -u jupyterhub -n 50 -f
+
+# Check TLJH configuration
+sudo tljh-config show
+
+# Reload proxy (apply HTTPS changes)
+sudo tljh-config reload proxy
+```
