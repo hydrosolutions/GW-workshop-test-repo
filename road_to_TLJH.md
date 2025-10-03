@@ -553,3 +553,320 @@ sudo tljh-config show
 # Reload proxy (apply HTTPS changes)
 sudo tljh-config reload proxy
 ```
+
+## Phase 6: nbgitpuller with Private Repositories
+
+### Overview
+
+nbgitpuller is a JupyterHub extension that allows you to distribute course materials via simple links. By default, it only works with public repositories. This section covers configuring Git credentials to enable pulling from private GitHub repositories.
+
+### Prerequisites
+
+- Admin access to your organization's GitHub
+- TLJH already installed and running
+- nbgitpuller installed (typically included with TLJH)
+
+---
+
+### Step 6.1: Generate GitHub Personal Access Token
+
+1. Log into GitHub with your personal account
+2. Navigate to **Profile Picture** → **Settings** → **Developer settings**
+3. Click **Personal access tokens** → **Tokens (classic)**
+4. Click **Generate new token** → **Generate new token (classic)**
+5. Configure the token:
+   - **Note:** Give it a descriptive name (e.g., `TLJH nbgitpuller - jupyter.hydrosolutions.ch`)
+   - **Expiration:** Choose based on your needs (30, 60, 90 days, or custom)
+   - **Scopes:** Check **`repo`** (Full control of private repositories)
+6. Click **Generate token**
+7. **CRITICAL:** Copy the token immediately (format: `ghp_xxxxxxxxxxxx...`)
+8. Save it securely - you cannot view it again
+
+**Important Note:** The token is created under your personal account but inherits your permissions to organization repositories.
+
+---
+
+### Step 6.2: Configure Git Credentials on EC2
+
+SSH into your server and configure system-wide Git credentials:
+
+```bash
+# SSH into server
+ssh -i ~/.ssh/workshop-central-asia.pem ubuntu@13.204.188.29
+
+# Switch to root
+sudo su
+
+# Configure git to use credential store for all users
+git config --system credential.helper 'store --file /etc/git-credentials'
+
+# Create credentials file (replace with your GitHub username and token)
+echo "https://YOUR_GITHUB_USERNAME:ghp_YOUR_TOKEN_HERE@github.com" | sudo tee /etc/git-credentials
+
+# Set permissions so all users can read it
+chmod 644 /etc/git-credentials
+
+# Verify the file was created
+cat /etc/git-credentials
+# Should output: https://YOUR_GITHUB_USERNAME:ghp_YOUR_TOKEN_HERE@github.com
+
+# Exit root
+exit
+```
+
+**Replace:**
+
+- `YOUR_GITHUB_USERNAME` with your GitHub username (e.g., `CooperBigFoot`)
+- `ghp_YOUR_TOKEN_HERE` with the token you generated
+
+**Example:**
+
+```bash
+echo "https://CooperBigFoot:XXXX@github.com" | sudo tee /etc/git-credentials
+```
+
+---
+
+### Step 6.3: Test Configuration
+
+```bash
+# As the ubuntu user (after exiting root)
+cd /tmp
+
+# Test that credentials work with your private repository
+git ls-remote https://github.com/hydrosolutions/GW-workshop-Zarafshan
+```
+
+**Expected output:** List of branches and refs from your private repository:
+
+```
+38499cf18040da71cacf7c69bd97da2536c3161c HEAD
+38499cf18040da71cacf7c69bd97da2536c3161c refs/heads/main
+b97e0b45a0bc0292536e91697c0b6c08fe29ed2e refs/heads/adding_modelling_workflow
+...
+```
+
+**Note:** You may see a warning `fatal: unable to get credential storage lock in 1000 ms: Permission denied` - this is harmless and can be ignored. The credentials are working correctly.
+
+---
+
+### Step 6.4: Create nbgitpuller Links
+
+Once credentials are configured, create nbgitpuller links for your private repositories:
+
+**General Format:**
+
+```
+https://jupyter.hydrosolutions.ch/hub/user-redirect/git-pull?repo=REPO_URL&branch=BRANCH&urlpath=lab/tree/REPO_NAME/PATH_TO_NOTEBOOK
+```
+
+**Example for GW-workshop-Zarafshan:**
+
+```
+https://jupyter.hydrosolutions.ch/hub/user-redirect/git-pull?repo=https://github.com/hydrosolutions/GW-workshop-Zarafshan&branch=main&urlpath=lab/tree/GW-workshop-Zarafshan/notebooks/1_introduction.ipynb
+```
+
+**URL Parameters:**
+
+- `repo`: Full GitHub repository URL
+- `branch`: Branch name (usually `main` or `master`)
+- `urlpath`: Path within JupyterHub to open after cloning
+  - Use `lab/tree/REPO_NAME/path` for JupyterLab interface
+  - Use `notebooks/REPO_NAME/path` for classic Notebook interface
+
+**Path Construction:**
+The `urlpath` follows this pattern: `lab/tree/{repository-name}/{path-within-repo}`
+
+For example, if your repository is `GW-workshop-Zarafshan` and the notebook is at `notebooks/1_introduction.ipynb`, the urlpath becomes:
+
+```
+lab/tree/GW-workshop-Zarafshan/notebooks/1_introduction.ipynb
+```
+
+---
+
+### Step 6.5: Share with Workshop Participants
+
+When users click the nbgitpuller link:
+
+1. They'll be prompted to log into JupyterHub (if not already logged in)
+2. nbgitpuller automatically clones/pulls the repository to their workspace
+3. The specified notebook opens automatically
+4. Subsequent clicks will pull updates without overwriting user changes
+
+**Merge Strategy:**
+nbgitpuller uses a specialized merge strategy that:
+
+- Pulls new/updated files from the repository
+- Preserves user modifications to existing files
+- Never causes merge conflicts
+
+This is ideal for workshop materials where instructors update content but participants also modify notebooks.
+
+---
+
+### Security Considerations
+
+**Token Security:**
+
+- Store tokens securely outside of Git repositories
+- Use appropriate expiration dates based on workshop schedule
+- Revoke tokens after workshops conclude
+- Never commit tokens to version control
+
+**File Permissions:**
+
+- `/etc/git-credentials` is readable by all users on the system
+- This is necessary for nbgitpuller to function for all workshop participants
+- Only admin users (with sudo) can modify the credentials file
+- The file is protected from modification by non-admin users
+
+**Best Practices:**
+
+- Create workshop-specific tokens with minimal necessary permissions
+- Set expiration dates aligned with workshop duration
+- Revoke tokens immediately if compromised
+- Use separate tokens for different deployments
+- Consider creating a dedicated GitHub account for workshop deployments
+
+**What Users Can Access:**
+
+- All JupyterHub users can clone/pull from repositories using the configured credentials
+- Users cannot see the token itself
+- Users cannot push changes back to the repository (unless they configure their own credentials)
+
+---
+
+### Troubleshooting
+
+#### Issue: nbgitpuller returns authentication error
+
+```bash
+# Verify credentials file exists and has content
+cat /etc/git-credentials
+
+# Test credentials manually
+git ls-remote https://github.com/your-org/your-private-repo
+
+# Check git configuration
+git config --system --list | grep credential
+```
+
+**Expected output:**
+
+```
+credential.helper=store --file /etc/git-credentials
+```
+
+#### Issue: "Permission denied" or "credential storage lock" warning
+
+This warning appears during `git ls-remote` but can be ignored if:
+
+- The repository branches are listed successfully
+- nbgitpuller links work correctly
+
+The warning occurs because Git tries to update its credential cache but lacks permissions. The credentials are still used successfully for the operation.
+
+#### Issue: Token expired
+
+**Symptoms:** Authentication failures, "Invalid username or token" errors
+
+**Solution:**
+
+1. Generate a new token following Step 6.1
+2. Update `/etc/git-credentials` with the new token:
+
+```bash
+sudo su
+echo "https://YOUR_USERNAME:ghp_NEW_TOKEN@github.com" | sudo tee /etc/git-credentials
+exit
+```
+
+3. No restart required; changes take effect immediately
+
+#### Issue: Wrong repository URL in nbgitpuller link
+
+**Symptom:** 404 error or repository not found
+
+**Solution:** Verify the repository URL is exactly correct:
+
+- Include the full URL: `https://github.com/org/repo`
+- Check repository name spelling
+- Ensure the repository exists and you have access
+
+#### Issue: Notebook path not opening correctly
+
+**Symptom:** nbgitpuller succeeds but opens wrong page
+
+**Solution:** Verify the `urlpath` parameter:
+
+- Must include repository name: `lab/tree/REPO_NAME/path/to/file.ipynb`
+- Path is relative to the repository root
+- Use forward slashes `/` (not backslashes)
+
+---
+
+### Maintenance
+
+**Before each workshop:**
+
+1. Verify token hasn't expired
+2. Test nbgitpuller link with the latest repository content
+3. Ensure credentials file is still properly configured
+
+**After workshop:**
+
+1. Consider revoking the token if no longer needed
+2. Or extend expiration if planning future workshops
+
+**Token rotation:**
+If using the same deployment for multiple workshops, rotate tokens periodically:
+
+1. Generate new token
+2. Update `/etc/git-credentials`
+3. Test with `git ls-remote`
+4. Revoke old token on GitHub
+
+---
+
+### Alternative: Using nbgitpuller Link Generator
+
+For easier link creation, you can use the online nbgitpuller link generator:
+
+**URL:** <https://jupyterhub.github.io/nbgitpuller/link>
+
+**Input:**
+
+1. JupyterHub URL: `https://jupyter.hydrosolutions.ch`
+2. Git Repository URL: `https://github.com/hydrosolutions/GW-workshop-Zarafshan`
+3. Branch: `main`
+4. File to open: `notebooks/1_introduction.ipynb`
+5. Application: JupyterLab
+
+The generator will create the properly formatted URL for you.
+
+---
+
+## Quick Reference
+
+```bash
+# SSH into server
+ssh -i ~/.ssh/workshop-central-asia.pem ubuntu@13.204.188.29
+
+# View configured credentials (as admin)
+sudo cat /etc/git-credentials
+
+# Test credentials
+git ls-remote https://github.com/your-org/your-private-repo
+
+# Update credentials (as admin)
+sudo su
+echo "https://USERNAME:TOKEN@github.com" | sudo tee /etc/git-credentials
+exit
+```
+
+**nbgitpuller URL format:**
+
+```bash
+https://jupyter.hydrosolutions.ch/hub/user-redirect/git-pull?repo=REPO_URL&branch=BRANCH&urlpath=lab/tree/REPO_NAME/PATH
+```
